@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Реестр объектов</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            margin: 0;
+            background: #f4f4f4;
+        }
+
+        header {
+            padding: 12px 16px;
+            background: #222;
+            color: #fff;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        h1 {
+            font-size: 18px;
+            margin: 0 0 8px;
+        }
+
+        .search-wrapper {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+
+        #searchInput {
+            flex: 1;
+            padding: 8px 10px;
+            border-radius: 6px;
+            border: 1px solid #ccc;
+            font-size: 14px;
+        }
+
+        #clearBtn {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: none;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        #clearBtn:active {
+            transform: scale(0.98);
+        }
+
+        .info {
+            font-size: 12px;
+            margin-top: 2px;
+            opacity: 0.85;
+        }
+
+        .info strong {
+            font-weight: 600;
+        }
+
+        .status-line {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 4px;
+            font-size: 12px;
+        }
+
+        #counter {
+            opacity: 0.9;
+        }
+
+        #errorMsg {
+            color: #ffb3b3;
+        }
+
+        .container {
+            padding: 8px;
+        }
+
+        .table-wrapper {
+            background: #fff;
+            border-radius: 8px;
+            overflow: auto;
+            max-height: calc(100vh - 120px);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            min-width: 600px;
+        }
+
+        thead {
+            position: sticky;
+            top: 0;
+            background: #eee;
+            z-index: 5;
+        }
+
+        th, td {
+            padding: 6px 8px;
+            border-bottom: 1px solid #ddd;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th {
+            font-weight: 600;
+        }
+
+        tbody tr:nth-child(even) {
+            background: #fafafa;
+        }
+
+        mark {
+            background: #fff4a0;
+            padding: 0 1px;
+        }
+
+        .loading {
+            font-size: 13px;
+            padding: 12px 8px;
+        }
+
+        .muted {
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Реестр объектов</h1>
+
+    <div class="search-wrapper">
+        <input id="searchInput" type="text" placeholder="Поиск по номеру, названию или адресу">
+        <button id="clearBtn">X</button>
+    </div>
+
+    <div class="info">
+        Данные загружаются из файла <strong>data.xlsx</strong> (первый лист).
+        Введите фрагмент номера, названия или адреса — совпадения подсвечиваются.
+    </div>
+
+    <div class="status-line">
+        <div id="counter"></div>
+        <div id="errorMsg"></div>
+    </div>
+</header>
+
+<div class="container">
+    <div class="table-wrapper">
+        <table id="dataTable">
+            <thead>
+            <tr>
+                <th>№</th>
+                <th>Наименование объекта</th>
+                <th>Адрес</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr>
+                <td colspan="3" class="loading">
+                    Загрузка данных из Excel...
+                </td>
+            </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ЛОКАЛЬНАЯ БИБЛИОТЕКА ДЛЯ ЧТЕНИЯ EXCEL -->
+<!-- Файл xlsx.full.min.js должен лежать рядом с index.html -->
+<script src="xlsx.full.min.js"></script>
+
+<script>
+    // Имя файла Excel, лежащего рядом с index.html
+    const EXCEL_FILE_NAME = "data.xlsx";
+
+    // Сколько максимум строк показывать одновременно (для телефонов)
+    const MAX_RENDER = 500;
+
+    const searchInput = document.getElementById('searchInput');
+    const clearBtn = document.getElementById('clearBtn');
+    const counter = document.getElementById('counter');
+    const errorMsg = document.getElementById('errorMsg');
+    const tbody = document.querySelector('#dataTable tbody');
+
+    let allRows = []; // сюда загрузим ВСЕ строки
+    let loading = false;
+
+    document.addEventListener('DOMContentLoaded', () => {
+        loadExcel();
+        setupEvents();
+    });
+
+    function setupEvents() {
+        let searchTimeout = null;
+
+        searchInput.addEventListener('input', () => {
+            if (searchTimeout) {
+                clearTimeout(searchTimeout);
+            }
+            searchTimeout = setTimeout(performSearch, 200);
+        });
+
+        clearBtn.addEventListener('click', () => {
+            searchInput.value = '';
+            performSearch();
+            searchInput.focus();
+        });
+    }
+
+    async function loadExcel() {
+        try {
+            loading = true;
+            errorMsg.textContent = '';
+            counter.textContent = 'Загружаю Excel-файл...';
+
+            // Получаем файл как бинарный массив
+            const response = await fetch(EXCEL_FILE_NAME);
+            if (!response.ok) {
+                throw new Error('Не удалось загрузить ' + EXCEL_FILE_NAME + ' (код ' + response.status + ')');
+            }
+
+            const arrayBuffer = await response.arrayBuffer();
+
+            // Читаем книгу через SheetJS
+            const data = new Uint8Array(arrayBuffer);
+            const workbook = XLSX.read(data, { type: 'array' });
+
+            if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+                throw new Error('В Excel-файле нет листов');
+            }
+
+            const firstSheetName = workbook.SheetNames[0];
+            const sheet = workbook.Sheets[firstSheetName];
+
+            // Превращаем лист в массив массивов, начиная с первой строки
+            const sheetData = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
+
+            if (!sheetData || sheetData.length === 0) {
+                throw new Error('Лист ' + firstSheetName + ' пустой');
+            }
+
+            // Предполагаем, что:
+            //   столбец 0 — №
+            //   столбец 1 — Наименование
+            //   столбец 2 — Адрес
+            // Пропускаем первую строку, если это заголовки (можно подправить логику при необходимости)
+            const rows = [];
+            for (let i = 0; i < sheetData.length; i++) {
+                const row = sheetData[i];
+
+                // Пропускаем совсем пустые строки
+                if (!row || (row[0] === undefined && row[1] === undefined && row[2] === undefined)) {
+                    continue;
+                }
+
+                let num = (row[0] !== undefined ? String(row[0]) : '').trim();
+                let name = (row[1] !== undefined ? String(row[1]) : '').trim();
+                let addr = (row[2] !== undefined ? String(row[2]) : '').trim();
+
+                // Если это первая строка и явно похоже на заголовки — пропускаем её
+                if (i === 0) {
+                    const headerJoined = (num + name + addr).toLowerCase();
+                    if (
+                        headerJoined.includes("наименование") ||
+                        headerJoined.includes("адрес") ||
+                        headerJoined.includes("объект")
+                    ) {
+                        continue;
+                    }
+                }
+
+                // Можно добавить здесь свои фильтры строк, если нужно
+                rows.push({ num, name, addr });
+            }
+
+            allRows = rows;
+            loading = false;
+
+            if (allRows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3" class="loading">Данные не найдены в файле.</td></tr>';
+                counter.textContent = '';
+                return;
+            }
+
+            // По умолчанию показываем первые MAX_RENDER строк
+            renderRows(allRows.slice(0, MAX_RENDER), '');
+            counter.textContent =
+                'Всего записей: ' + allRows.length +
+                '. Показаны первые ' + Math.min(MAX_RENDER, allRows.length) +
+                '. Для поиска начните вводить текст выше.';
+
+        } catch (e) {
+            console.error(e);
+            loading = false;
+            tbody.innerHTML = '<tr><td colspan="3" class="loading">Не удалось загрузить данные.</td></tr>';
+            errorMsg.textContent = 'Ошибка: ' + e.message;
+            counter.textContent = '';
+        }
+    }
+
+    function performSearch() {
+        if (loading) {
+            counter.textContent = 'Данные ещё загружаются...';
+            return;
+        }
+
+        if (!allRows || allRows.length === 0) {
+            counter.textContent = 'Нет данных для поиска.';
+            return;
+        }
+
+        const query = searchInput.value.trim().toLowerCase();
+
+        if (!query) {
+            renderRows(allRows.slice(0, MAX_RENDER), '');
+            counter.textContent =
+                'Всего записей: ' + allRows.length +
+                '. Показаны первые ' + Math.min(MAX_RENDER, allRows.length) + '.';
+            errorMsg.textContent = '';
+            return;
+        }
+
+        const filtered = allRows.filter(row => {
+            const fullText = (row.num + ' ' + row.name + ' ' + row.addr).toLowerCase();
+            return fullText.includes(query);
+        });
+
+        const rowsToShow = filtered.slice(0, MAX_RENDER);
+        renderRows(rowsToShow, query);
+
+        if (filtered.length === 0) {
+            counter.textContent = 'Совпадений не найдено.';
+        } else if (filtered.length > MAX_RENDER) {
+            counter.textContent =
+                'Найдено: ' + filtered.length +
+                ' записей. Показаны первые ' + MAX_RENDER +
+                '. Уточните запрос, чтобы сузить выборку.';
+        } else {
+            counter.textContent = 'Найдено: ' + filtered.length + ' записей.';
+        }
+
+        errorMsg.textContent = '';
+    }
+
+    function renderRows(rows, query) {
+        const q = query.toLowerCase();
+        if (!rows || rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" class="loading">Нет данных для отображения.</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = rows.map(row => {
+            return '<tr>' +
+                '<td>' + highlight(row.num, q) + '</td>' +
+                '<td>' + highlight(row.name, q) + '</td>' +
+                '<td>' + highlight(row.addr, q) + '</td>' +
+                '</tr>';
+        }).join('');
+    }
+
+    function escapeHtml(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function highlight(text, query) {
+        const safe = escapeHtml(text);
+        if (!query) {
+            return safe;
+        }
+
+        const lowerText = text.toLowerCase();
+        const idx = lowerText.indexOf(query);
+        if (idx === -1) {
+            return safe;
+        }
+
+        const before = escapeHtml(text.slice(0, idx));
+        const match = escapeHtml(text.slice(idx, idx + query.length));
+        const after = escapeHtml(text.slice(idx + query.length));
+
+        return before + '<mark>' + match + '</mark>' + after;
+    }
+</script>
+
+</body>
+</html>
